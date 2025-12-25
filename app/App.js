@@ -8,6 +8,8 @@ import {
   Alert,
   ActivityIndicator,
   Dimensions,
+  Image,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Audio, Video } from 'expo-av';
@@ -35,6 +37,11 @@ export default function App() {
   const [cameraRef, setCameraRef] = useState(null);
   const [showCamera, setShowCamera] = useState(false);
 
+  // Photo capture states
+  const [showPhotoCamera, setShowPhotoCamera] = useState(false);
+  const [capturedPhotoUri, setCapturedPhotoUri] = useState(null);
+  const [photoCameraRef, setPhotoCameraRef] = useState(null);
+
   // Files and playback states
   const [mediaFiles, setMediaFiles] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -42,6 +49,9 @@ export default function App() {
   const [playingFileUrl, setPlayingFileUrl] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playingFileType, setPlayingFileType] = useState(null);
+
+  // Photo viewer state
+  const [viewingPhotoUrl, setViewingPhotoUrl] = useState(null);
 
   const timerRef = useRef(null);
   const soundRef = useRef(null);
@@ -146,6 +156,28 @@ export default function App() {
     }
   };
 
+  // ===== PHOTO CAPTURE =====
+  const handleTakePhoto = async () => {
+    try {
+      if (!photoCameraRef) {
+        Alert.alert('Error', 'Camera not ready');
+        return;
+      }
+
+      const photo = await photoCameraRef.takePictureAsync({
+        quality: 0.8,
+        base64: false,
+      });
+
+      if (photo && photo.uri) {
+        setCapturedPhotoUri(photo.uri);
+        setShowPhotoCamera(false);
+      }
+    } catch (err) {
+      Alert.alert('Photo Capture Error', 'Failed: ' + err.message);
+    }
+  };
+
   // ===== UPLOAD FUNCTIONS =====
   const handleUploadAudio = async () => {
     if (!recordedAudioUri) {
@@ -219,6 +251,41 @@ export default function App() {
     }
   };
 
+  const handleUploadPhoto = async () => {
+    if (!capturedPhotoUri) {
+      Alert.alert('No Photo', 'Please take a photo first');
+      return;
+    }
+
+    setUploadLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append('media', {
+        uri: capturedPhotoUri,
+        type: 'image/jpeg',
+        name: `photo_${Date.now()}.jpg`,
+      });
+
+      const response = await axios.post(`${API_URL}/upload`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: 30000,
+      });
+
+      if (response.data.success) {
+        Alert.alert('Success', 'Photo uploaded successfully!');
+        setCapturedPhotoUri(null);
+        await fetchMediaFiles();
+      }
+    } catch (err) {
+      Alert.alert('Upload Error', 'Failed to upload photo: ' + err.message);
+      console.error('Upload error:', err);
+    } finally {
+      setUploadLoading(false);
+    }
+  };
+
   // ===== FETCH FILES =====
   const fetchMediaFiles = async () => {
     setLoading(true);
@@ -241,6 +308,12 @@ export default function App() {
   const playMedia = async (fileUrl, fileType) => {
     try {
       console.log('▶️ Playing:', fileType, fileUrl);
+
+      // If it's a photo, just show it
+      if (fileType === 'photo') {
+        setViewingPhotoUrl(fileUrl);
+        return;
+      }
 
       // If clicking the same file, toggle pause
       if (playingFileUrl === fileUrl && isPlaying) {
@@ -315,7 +388,17 @@ export default function App() {
   };
 
   const getFileType = (filename) => {
-    return filename.endsWith('.mp4') ? 'video' : 'audio';
+    if (filename.endsWith('.mp4')) return 'video';
+    if (filename.endsWith('.jpg') || filename.endsWith('.jpeg') || filename.endsWith('.png')) return 'photo';
+    return 'audio';
+  };
+
+  const getFileIcon = (fileType) => {
+    switch (fileType) {
+      case 'video': return '🎬';
+      case 'photo': return '📷';
+      default: return '🎵';
+    }
   };
 
   // ===== RENDER FUNCTIONS =====
@@ -334,13 +417,13 @@ export default function App() {
       >
         <View style={styles.fileContent}>
           <Text style={styles.fileName}>
-            {fileType === 'video' ? '🎬' : '🎵'} {item.filename}
+            {getFileIcon(fileType)} {item.filename}
           </Text>
           <Text style={styles.fileDate}>{formatDate(item.createdAt)}</Text>
         </View>
         <View style={styles.playButtonContainer}>
           <Text style={styles.playIcon}>
-            {isCurrentlyPlaying ? '⏸' : '▶'}
+            {fileType === 'photo' ? '👁️' : (isCurrentlyPlaying ? '⏸' : '▶')}
           </Text>
         </View>
       </TouchableOpacity>
@@ -383,6 +466,36 @@ export default function App() {
       </View>
     );
   };
+
+  // ===== PHOTO VIEWER MODAL =====
+  const renderPhotoViewer = () => {
+    if (!viewingPhotoUrl) return null;
+
+    return (
+      <Modal
+        visible={true}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setViewingPhotoUrl(null)}
+      >
+        <View style={styles.photoViewerContainer}>
+          <TouchableOpacity
+            style={styles.closeButton}
+            onPress={() => setViewingPhotoUrl(null)}
+          >
+            <Text style={styles.closeButtonText}>✕</Text>
+          </TouchableOpacity>
+          <Image
+            source={{ uri: viewingPhotoUrl }}
+            style={styles.photoViewer}
+            resizeMode="contain"
+          />
+        </View>
+      </Modal>
+    );
+  };
+
+  const hasActiveMedia = isRecording || recordedAudioUri || isVideoRecording || recordedVideoUri || capturedPhotoUri;
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -455,21 +568,49 @@ export default function App() {
             </Text>
           </View>
         )}
+        {capturedPhotoUri && (
+          <View style={styles.recordedBox}>
+            <Text style={styles.recordedLabel}>✓ Photo Captured</Text>
+            <Image
+              source={{ uri: capturedPhotoUri }}
+              style={styles.thumbnailPreview}
+            />
+          </View>
+        )}
       </View>
 
       {/* Bottom Controls */}
       <View style={styles.footer}>
-        {/* AUDIO CONTROLS */}
-        {!isRecording && !recordedAudioUri && !isVideoRecording && !recordedVideoUri && (
-          <TouchableOpacity
-            style={styles.recordButton}
-            onPress={handleStartRecording}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.recordButtonText}>🎤 Record</Text>
-          </TouchableOpacity>
+        {/* Show buttons only when no active media */}
+        {!hasActiveMedia && (
+          <>
+            <TouchableOpacity
+              style={styles.recordButton}
+              onPress={handleStartRecording}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.recordButtonText}>🎤 Audio</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.videoButton}
+              onPress={() => setShowCamera(true)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.recordButtonText}>🎬 Video</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.photoButton}
+              onPress={() => setShowPhotoCamera(true)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.recordButtonText}>📷 Photo</Text>
+            </TouchableOpacity>
+          </>
         )}
 
+        {/* Audio recording controls */}
         {isRecording && (
           <TouchableOpacity
             style={styles.stopButton}
@@ -480,7 +621,7 @@ export default function App() {
           </TouchableOpacity>
         )}
 
-        {recordedAudioUri && !isRecording && !isVideoRecording && (
+        {recordedAudioUri && !isRecording && (
           <>
             <TouchableOpacity
               style={styles.newRecordButton}
@@ -511,17 +652,7 @@ export default function App() {
           </>
         )}
 
-        {/* VIDEO CONTROLS */}
-        {!isRecording && !recordedAudioUri && !isVideoRecording && !recordedVideoUri && (
-          <TouchableOpacity
-            style={styles.videoButton}
-            onPress={() => setShowCamera(true)}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.recordButtonText}>🎬 Take Video</Text>
-          </TouchableOpacity>
-        )}
-
+        {/* Video recording controls */}
         {isVideoRecording && (
           <TouchableOpacity
             style={styles.stopButton}
@@ -532,7 +663,7 @@ export default function App() {
           </TouchableOpacity>
         )}
 
-        {recordedVideoUri && !isVideoRecording && !isRecording && (
+        {recordedVideoUri && !isVideoRecording && (
           <>
             <TouchableOpacity
               style={styles.newRecordButton}
@@ -562,10 +693,44 @@ export default function App() {
             </TouchableOpacity>
           </>
         )}
+
+        {/* Photo controls */}
+        {capturedPhotoUri && (
+          <>
+            <TouchableOpacity
+              style={styles.newRecordButton}
+              onPress={() => {
+                setCapturedPhotoUri(null);
+              }}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.buttonText}>🔄 New</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.uploadButton,
+                uploadLoading && styles.uploadButtonDisabled,
+              ]}
+              onPress={handleUploadPhoto}
+              disabled={uploadLoading}
+              activeOpacity={0.8}
+            >
+              {uploadLoading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.buttonText}>📤 Upload</Text>
+              )}
+            </TouchableOpacity>
+          </>
+        )}
       </View>
 
       {/* Video Player */}
       {renderVideoPlayer()}
+
+      {/* Photo Viewer */}
+      {renderPhotoViewer()}
 
       {/* Camera for Video Recording */}
       {showCamera && (
@@ -620,6 +785,35 @@ export default function App() {
               </Text>
             </View>
           )}
+        </View>
+      )}
+
+      {/* Camera for Photo Capture */}
+      {showPhotoCamera && (
+        <View style={styles.cameraContainer}>
+          <CameraView
+            ref={setPhotoCameraRef}
+            style={styles.camera}
+            mode="picture"
+          />
+          <View style={styles.cameraControls}>
+            <TouchableOpacity
+              style={styles.cameraButton}
+              onPress={() => {
+                setShowPhotoCamera(false);
+                setCapturedPhotoUri(null);
+              }}
+            >
+              <Text style={styles.cameraButtonText}>✕ Close</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.cameraButton, styles.captureButton]}
+              onPress={handleTakePhoto}
+            >
+              <Text style={styles.cameraButtonText}>📷 Capture</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       )}
     </SafeAreaView>
@@ -741,6 +935,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#059669',
   },
+  thumbnailPreview: {
+    width: '100%',
+    height: 120,
+    borderRadius: 8,
+    marginTop: 8,
+  },
   footer: {
     flexDirection: 'row',
     paddingHorizontal: 16,
@@ -769,6 +969,18 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
     shadowColor: '#8b5cf6',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  photoButton: {
+    flex: 1,
+    backgroundColor: '#06b6d4',
+    paddingVertical: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+    shadowColor: '#06b6d4',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
     shadowRadius: 3,
@@ -815,6 +1027,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     zIndex: 1000,
   },
+  photoViewerContainer: {
+    flex: 1,
+    backgroundColor: '#000',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   closeButton: {
     position: 'absolute',
     top: 40,
@@ -835,6 +1053,10 @@ const styles = StyleSheet.create({
   videoPlayer: {
     width: screenWidth,
     height: 300,
+  },
+  photoViewer: {
+    width: screenWidth,
+    height: '80%',
   },
   cameraContainer: {
     ...StyleSheet.absoluteFillObject,
@@ -864,6 +1086,9 @@ const styles = StyleSheet.create({
   recordingButton: {
     backgroundColor: '#ef4444',
   },
+  captureButton: {
+    backgroundColor: '#06b6d4',
+  },
   cameraButtonText: {
     color: '#fff',
     fontSize: 14,
@@ -884,5 +1109,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     textAlign: 'center',
-  }
+  },
 });
