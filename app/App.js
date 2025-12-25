@@ -7,26 +7,45 @@ import {
   FlatList,
   Alert,
   ActivityIndicator,
+  Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Audio } from 'expo-av';
+import { Audio, Video } from 'expo-av';
+import { CameraView } from 'expo-camera';
 import * as FileSystem from 'expo-file-system';
 import axios from 'axios';
 
+// ⚠️ IMPORTANT: Update this to match your server IP
 const API_URL = 'http://10.177.157.242:3000';
 
+const { width: screenWidth } = Dimensions.get('window');
+
 export default function App() {
+  // Recording states
   const [recording, setRecording] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordedAudioUri, setRecordedAudioUri] = useState(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
-  const [audioFiles, setAudioFiles] = useState([]);
+
+  // Video recording states
+  const [videoRecording, setVideoRecording] = useState(null);
+  const [isVideoRecording, setIsVideoRecording] = useState(false);
+  const [recordedVideoUri, setRecordedVideoUri] = useState(null);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [cameraRef, setCameraRef] = useState(null);
+  const [showCamera, setShowCamera] = useState(false);
+
+  // Files and playback states
+  const [mediaFiles, setMediaFiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [uploadLoading, setUploadLoading] = useState(false);
   const [playingFileUrl, setPlayingFileUrl] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [playingFileType, setPlayingFileType] = useState(null);
+
   const timerRef = useRef(null);
   const soundRef = useRef(null);
+  const videoRef = useRef(null);
 
   // Initialize audio session
   useEffect(() => {
@@ -52,22 +71,13 @@ export default function App() {
       if (soundRef.current) {
         soundRef.current.unloadAsync();
       }
-    };
-  }, []);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-      }
-      if (soundRef.current) {
-        soundRef.current.stopAsync();
+      if (videoRef.current) {
+        videoRef.current.pauseAsync();
       }
     };
   }, []);
 
-  // Start recording
+  // ===== AUDIO RECORDING =====
   const handleStartRecording = async () => {
     try {
       const { recording } = await Audio.Recording.createAsync(
@@ -85,7 +95,6 @@ export default function App() {
     }
   };
 
-  // Stop recording
   const handleStopRecording = async () => {
     if (timerRef.current) {
       clearInterval(timerRef.current);
@@ -102,15 +111,43 @@ export default function App() {
     }
   };
 
-  // Format duration
-  const formatDuration = (seconds) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  // ===== VIDEO RECORDING =====
+  const handleStartVideoRecording = async () => {
+    try {
+      if (!cameraRef) {
+        Alert.alert('Error', 'Camera not ready');
+        return;
+      }
+
+      const video = await cameraRef.recordAsync({
+        quality: '1080p',
+      });
+
+      if (video && video.uri) {
+        setRecordedVideoUri(video.uri);
+        setShowCamera(false);
+      }
+    } catch (err) {
+      Alert.alert('Video Recording Error', 'Failed: ' + err.message);
+    }
   };
 
-  // Upload recorded audio
-  const handleUpload = async () => {
+  const handleStopVideoRecording = async () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+    }
+
+    try {
+      if (cameraRef) {
+        await cameraRef.stopRecording();
+      }
+    } catch (err) {
+      Alert.alert('Error', 'Failed to stop recording: ' + err.message);
+    }
+  };
+
+  // ===== UPLOAD FUNCTIONS =====
+  const handleUploadAudio = async () => {
     if (!recordedAudioUri) {
       Alert.alert('No Recording', 'Please record audio first');
       return;
@@ -119,7 +156,7 @@ export default function App() {
     setUploadLoading(true);
     try {
       const formData = new FormData();
-      formData.append('audio', {
+      formData.append('media', {
         uri: recordedAudioUri,
         type: 'audio/m4a',
         name: `audio_${Date.now()}.m4a`,
@@ -129,29 +166,61 @@ export default function App() {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
-        timeout: 10000,
+        timeout: 30000,
       });
 
       if (response.data.success) {
         Alert.alert('Success', 'Audio uploaded successfully!');
         setRecordedAudioUri(null);
         setRecordingDuration(0);
-        await fetchAudioFiles();
+        await fetchMediaFiles();
       }
     } catch (err) {
-      Alert.alert(
-        'Upload Error',
-        'Cannot connect to server.\n\nMake sure:\n1. Server is running\n2. API_URL IP is correct\n3. Device is on same WiFi\n\nError: ' +
-          err.message
-      );
+      Alert.alert('Upload Error', 'Failed to upload audio: ' + err.message);
       console.error('Upload error:', err);
     } finally {
       setUploadLoading(false);
     }
   };
 
-  // Fetch all audio files
-  const fetchAudioFiles = async () => {
+  const handleUploadVideo = async () => {
+    if (!recordedVideoUri) {
+      Alert.alert('No Video', 'Please record video first');
+      return;
+    }
+
+    setUploadLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append('media', {
+        uri: recordedVideoUri,
+        type: 'video/mp4',
+        name: `video_${Date.now()}.mp4`,
+      });
+
+      const response = await axios.post(`${API_URL}/upload`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: 60000,
+      });
+
+      if (response.data.success) {
+        Alert.alert('Success', 'Video uploaded successfully!');
+        setRecordedVideoUri(null);
+        setVideoDuration(0);
+        await fetchMediaFiles();
+      }
+    } catch (err) {
+      Alert.alert('Upload Error', 'Failed to upload video: ' + err.message);
+      console.error('Upload error:', err);
+    } finally {
+      setUploadLoading(false);
+    }
+  };
+
+  // ===== FETCH FILES =====
+  const fetchMediaFiles = async () => {
     setLoading(true);
     try {
       console.log('📡 Fetching from:', API_URL);
@@ -159,68 +228,83 @@ export default function App() {
         timeout: 10000,
       });
       console.log('✅ Files received:', response.data.files?.length || 0);
-      setAudioFiles(response.data.files || []);
+      setMediaFiles(response.data.files || []);
     } catch (err) {
-      Alert.alert(
-        'Fetch Error',
-        'Cannot connect to server.\n\nMake sure:\n1. Server is running\n2. API_URL IP is correct\n3. Device is on same WiFi\n\nError: ' +
-          err.message
-      );
+      Alert.alert('Fetch Error', 'Cannot connect to server: ' + err.message);
       console.error('Fetch error:', err);
     } finally {
       setLoading(false);
     }
   };
 
-  // Play audio file
-  const playAudio = async (fileUrl) => {
+  // ===== PLAYBACK FUNCTIONS =====
+  const playMedia = async (fileUrl, fileType) => {
     try {
-      console.log('🎵 Playing:', fileUrl);
+      console.log('▶️ Playing:', fileType, fileUrl);
 
       // If clicking the same file, toggle pause
       if (playingFileUrl === fileUrl && isPlaying) {
-        if (soundRef.current) {
+        if (fileType === 'audio' && soundRef.current) {
           await soundRef.current.pauseAsync();
+        } else if (fileType === 'video' && videoRef.current) {
+          await videoRef.current.pauseAsync();
         }
         setIsPlaying(false);
         return;
       }
 
-      // Stop current if different file
+      // Stop current playback if different file
       if (playingFileUrl !== fileUrl && isPlaying) {
-        if (soundRef.current) {
+        if (playingFileType === 'audio' && soundRef.current) {
           await soundRef.current.stopAsync();
           await soundRef.current.unloadAsync();
+        } else if (playingFileType === 'video' && videoRef.current) {
+          await videoRef.current.pauseAsync();
         }
       }
 
-      // Create and play new sound
-      const { sound: newSound } = await Audio.Sound.createAsync(
-        { uri: fileUrl },
-        { shouldPlay: true }
-      );
+      // Play audio
+      if (fileType === 'audio') {
+        const { sound: newSound } = await Audio.Sound.createAsync(
+          { uri: fileUrl },
+          { shouldPlay: true }
+        );
+        soundRef.current = newSound;
+        setPlayingFileUrl(fileUrl);
+        setPlayingFileType('audio');
+        setIsPlaying(true);
 
-      soundRef.current = newSound;
-      setPlayingFileUrl(fileUrl);
-      setIsPlaying(true);
+        newSound.setOnPlaybackStatusUpdate((status) => {
+          if (status.didJustFinish) {
+            setIsPlaying(false);
+            setPlayingFileUrl(null);
+            setPlayingFileType(null);
+          }
+        });
+      }
+      // Play video
+      else if (fileType === 'video') {
+        setPlayingFileUrl(fileUrl);
+        setPlayingFileType('video');
+        setIsPlaying(true);
 
-      // Handle completion
-      newSound.setOnPlaybackStatusUpdate((status) => {
-        if (status.didJustFinish) {
-          setIsPlaying(false);
-          setPlayingFileUrl(null);
+        if (videoRef.current) {
+          await videoRef.current.playAsync();
         }
-      });
+      }
     } catch (err) {
-      Alert.alert(
-        'Playback Error',
-        'Failed to play audio.\n\nMake sure:\n1. Server is running\n2. URL is correct\n\nURL: ' + fileUrl + '\n\nError: ' + err.message
-      );
+      Alert.alert('Playback Error', 'Failed to play media: ' + err.message);
       console.error('Playback error:', err);
     }
   };
 
-  // Format date
+  // ===== FORMATTING =====
+  const formatDuration = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
   const formatDate = (dateString) => {
     const date = new Date(dateString);
     return (
@@ -230,8 +314,13 @@ export default function App() {
     );
   };
 
-  // Render audio file item
+  const getFileType = (filename) => {
+    return filename.endsWith('.mp4') ? 'video' : 'audio';
+  };
+
+  // ===== RENDER FUNCTIONS =====
   const renderFileItem = ({ item }) => {
+    const fileType = getFileType(item.filename);
     const isCurrentlyPlaying = playingFileUrl === item.url && isPlaying;
 
     return (
@@ -240,11 +329,13 @@ export default function App() {
           styles.fileItem,
           isCurrentlyPlaying && styles.fileItemActive,
         ]}
-        onPress={() => playAudio(item.url)}
+        onPress={() => playMedia(item.url, fileType)}
         activeOpacity={0.7}
       >
         <View style={styles.fileContent}>
-          <Text style={styles.fileName}>🎵 {item.filename}</Text>
+          <Text style={styles.fileName}>
+            {fileType === 'video' ? '🎬' : '🎵'} {item.filename}
+          </Text>
           <Text style={styles.fileDate}>{formatDate(item.createdAt)}</Text>
         </View>
         <View style={styles.playButtonContainer}>
@@ -256,13 +347,50 @@ export default function App() {
     );
   };
 
+  // ===== VIDEO PLAYER MODAL =====
+  const renderVideoPlayer = () => {
+    if (playingFileType !== 'video' || !playingFileUrl) return null;
+
+    return (
+      <View style={styles.videoPlayerContainer}>
+        <TouchableOpacity
+          style={styles.closeButton}
+          onPress={() => {
+            setPlayingFileUrl(null);
+            setPlayingFileType(null);
+            setIsPlaying(false);
+            if (videoRef.current) {
+              videoRef.current.pauseAsync();
+            }
+          }}
+        >
+          <Text style={styles.closeButtonText}>✕</Text>
+        </TouchableOpacity>
+        <Video
+          ref={videoRef}
+          source={{ uri: playingFileUrl }}
+          style={styles.videoPlayer}
+          useNativeControls
+          resizeMode="contain"
+          onPlaybackStatusUpdate={(status) => {
+            if (status.didJustFinish) {
+              setIsPlaying(false);
+              setPlayingFileUrl(null);
+              setPlayingFileType(null);
+            }
+          }}
+        />
+      </View>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       {/* Header - Fetch Button */}
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.fetchButton}
-          onPress={fetchAudioFiles}
+          onPress={fetchMediaFiles}
           disabled={loading}
           activeOpacity={0.7}
         >
@@ -277,9 +405,9 @@ export default function App() {
 
       {/* Files List */}
       <View style={styles.filesList}>
-        {audioFiles.length > 0 ? (
+        {mediaFiles.length > 0 ? (
           <FlatList
-            data={audioFiles}
+            data={mediaFiles}
             renderItem={renderFileItem}
             keyExtractor={(item) => item.filename}
             scrollEnabled={true}
@@ -287,7 +415,7 @@ export default function App() {
         ) : (
           <View style={styles.emptyState}>
             <Text style={styles.emptyText}>
-              {loading ? 'Loading...' : 'No audio files yet'}
+              {loading ? 'Loading...' : 'No files yet'}
             </Text>
           </View>
         )}
@@ -299,25 +427,40 @@ export default function App() {
           <View style={styles.recordingStatus}>
             <Text style={styles.recordingDot}>🔴</Text>
             <Text style={styles.recordingText}>
-              Recording... {formatDuration(recordingDuration)}
+              Recording Audio... {formatDuration(recordingDuration)}
+            </Text>
+          </View>
+        )}
+        {isVideoRecording && (
+          <View style={styles.recordingStatus}>
+            <Text style={styles.recordingDot}>🔴</Text>
+            <Text style={styles.recordingText}>
+              Recording Video... {formatDuration(videoDuration)}
             </Text>
           </View>
         )}
         {recordedAudioUri && !isRecording && (
           <View style={styles.recordedBox}>
             <Text style={styles.recordedLabel}>✓ Audio Recorded</Text>
-            <View style={styles.recordedDetails}>
-              <Text style={styles.recordedDetail}>
-                📊 Duration: {formatDuration(recordingDuration)}
-              </Text>
-            </View>
+            <Text style={styles.recordedDetail}>
+              📊 Duration: {formatDuration(recordingDuration)}
+            </Text>
+          </View>
+        )}
+        {recordedVideoUri && !isVideoRecording && (
+          <View style={styles.recordedBox}>
+            <Text style={styles.recordedLabel}>✓ Video Recorded</Text>
+            <Text style={styles.recordedDetail}>
+              📊 Duration: {formatDuration(videoDuration)}
+            </Text>
           </View>
         )}
       </View>
 
       {/* Bottom Controls */}
       <View style={styles.footer}>
-        {!isRecording && !recordedAudioUri && (
+        {/* AUDIO CONTROLS */}
+        {!isRecording && !recordedAudioUri && !isVideoRecording && !recordedVideoUri && (
           <TouchableOpacity
             style={styles.recordButton}
             onPress={handleStartRecording}
@@ -337,7 +480,7 @@ export default function App() {
           </TouchableOpacity>
         )}
 
-        {recordedAudioUri && !isRecording && (
+        {recordedAudioUri && !isRecording && !isVideoRecording && (
           <>
             <TouchableOpacity
               style={styles.newRecordButton}
@@ -355,7 +498,59 @@ export default function App() {
                 styles.uploadButton,
                 uploadLoading && styles.uploadButtonDisabled,
               ]}
-              onPress={handleUpload}
+              onPress={handleUploadAudio}
+              disabled={uploadLoading}
+              activeOpacity={0.8}
+            >
+              {uploadLoading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.buttonText}>📤 Upload</Text>
+              )}
+            </TouchableOpacity>
+          </>
+        )}
+
+        {/* VIDEO CONTROLS */}
+        {!isRecording && !recordedAudioUri && !isVideoRecording && !recordedVideoUri && (
+          <TouchableOpacity
+            style={styles.videoButton}
+            onPress={() => setShowCamera(true)}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.recordButtonText}>🎬 Take Video</Text>
+          </TouchableOpacity>
+        )}
+
+        {isVideoRecording && (
+          <TouchableOpacity
+            style={styles.stopButton}
+            onPress={handleStopVideoRecording}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.recordButtonText}>⏹ Stop</Text>
+          </TouchableOpacity>
+        )}
+
+        {recordedVideoUri && !isVideoRecording && !isRecording && (
+          <>
+            <TouchableOpacity
+              style={styles.newRecordButton}
+              onPress={() => {
+                setRecordedVideoUri(null);
+                setVideoDuration(0);
+              }}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.buttonText}>🔄 New</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.uploadButton,
+                uploadLoading && styles.uploadButtonDisabled,
+              ]}
+              onPress={handleUploadVideo}
               disabled={uploadLoading}
               activeOpacity={0.8}
             >
@@ -368,6 +563,65 @@ export default function App() {
           </>
         )}
       </View>
+
+      {/* Video Player */}
+      {renderVideoPlayer()}
+
+      {/* Camera for Video Recording */}
+      {showCamera && (
+        <View style={styles.cameraContainer}>
+          <CameraView
+            ref={setCameraRef}
+            style={styles.camera}
+            mode="video"
+          />
+          <View style={styles.cameraControls}>
+            <TouchableOpacity
+              style={styles.cameraButton}
+              onPress={() => {
+                setShowCamera(false);
+                setRecordedVideoUri(null);
+              }}
+            >
+              <Text style={styles.cameraButtonText}>✕ Close</Text>
+            </TouchableOpacity>
+
+            {!isVideoRecording ? (
+              <TouchableOpacity
+                style={[styles.cameraButton, styles.recordingButton]}
+                onPress={async () => {
+                  setIsVideoRecording(true);
+                  setVideoDuration(0);
+                  timerRef.current = setInterval(() => {
+                    setVideoDuration((prev) => prev + 1);
+                  }, 1000);
+                  await handleStartVideoRecording();
+                }}
+              >
+                <Text style={styles.cameraButtonText}>🔴 Record</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={[styles.cameraButton, styles.stopButton]}
+                onPress={async () => {
+                  if (timerRef.current) clearInterval(timerRef.current);
+                  setIsVideoRecording(false);
+                  await handleStopVideoRecording();
+                }}
+              >
+                <Text style={styles.cameraButtonText}>⏹ Stop</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+          {isVideoRecording && (
+            <View style={styles.recordingIndicator}>
+              <Text style={styles.recordingIndicatorText}>
+                🔴 Recording... {formatDuration(videoDuration)}
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -481,11 +735,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#16a34a',
     fontWeight: '600',
-    marginBottom: 8,
-  },
-  recordedDetails: {
-    flexDirection: 'column',
-    gap: 4,
+    marginBottom: 6,
   },
   recordedDetail: {
     fontSize: 12,
@@ -507,6 +757,18 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
     shadowColor: '#ef4444',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  videoButton: {
+    flex: 1,
+    backgroundColor: '#8b5cf6',
+    paddingVertical: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+    shadowColor: '#8b5cf6',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
     shadowRadius: 3,
@@ -546,4 +808,81 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
+  videoPlayerContainer: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+  },
+  closeButton: {
+    position: 'absolute',
+    top: 40,
+    right: 20,
+    zIndex: 1001,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  closeButtonText: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  videoPlayer: {
+    width: screenWidth,
+    height: 300,
+  },
+  cameraContainer: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000',
+    zIndex: 1000,
+  },
+  camera: {
+    flex: 1,
+  },
+  cameraControls: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'center',
+    paddingBottom: 20,
+    paddingHorizontal: 16,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    gap: 12,
+  },
+  cameraButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    backgroundColor: '#6366f1',
+    alignItems: 'center',
+    flex: 1,
+  },
+  recordingButton: {
+    backgroundColor: '#ef4444',
+  },
+  cameraButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  recordingIndicator: {
+    position: 'absolute',
+    top: 40,
+    left: 16,
+    right: 16,
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+  },
+  recordingIndicatorText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
+  }
 });
