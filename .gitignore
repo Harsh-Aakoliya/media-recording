@@ -1,0 +1,35 @@
+# Dependencies
+app/node_modules/
+server/node_modules/
+
+# Expo / React Native builds & caches
+app/.expo/
+app/.expo-shared/
+app/dist/
+app/web-build/
+app/.metro-health-check*
+app/expo-env.d.ts
+app/ios/
+app/android/
+app/.kotlin/
+app/*.tsbuildinfo
+
+# Debug logs
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# Secrets / certs
+*.pem
+*.p8
+*.p12
+*.key
+*.mobileprovision
+app/.env*.local
+
+# Uploaded/media artifacts
+server/uploads/
+
+# System
+.DS_Store
+
