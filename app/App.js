@@ -13,8 +13,6 @@ import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
 import axios from 'axios';
 
-// ⚠️ IMPORTANT: Update this to match your server IP
-// Get IP from server logs when you start it
 const API_URL = 'http://10.177.157.242:3000';
 
 export default function App() {
